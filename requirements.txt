@@ -1,0 +1,8 @@
+fastmcp
+mcp
+requests
+openwakeword
+onnxruntime
+faster-whisper
+sounddevice
+numpy
