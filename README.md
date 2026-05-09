@@ -2,7 +2,7 @@
 
 ---
 
-Extemeley simple and light voice assistant that focuses on low latency and average consistency
+Extemeley simple and light voice assistant that focuses on low latency and average consistency. It's primary purpose is to run in a Jetson Nano or a Intel NUC.
 
 ---
 
