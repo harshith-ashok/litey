@@ -5,3 +5,5 @@ openwakeword
 faster-whisper
 sounddevice
 numpy
+gradio
+ai-edge-litert
