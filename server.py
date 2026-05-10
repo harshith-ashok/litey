@@ -7,7 +7,7 @@ from datetime import datetime
 mcp = FastMCP("Local Voice Assistant")
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen2.5-coder:7b"
+MODEL = "gemma4:e4b"
 SESSION_FILE = Path(__file__).with_name("conversation_history.json")
 
 SYSTEM_PROMPT = """You are a helpful voice assistant. Respond concisely and accurately:
