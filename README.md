@@ -41,3 +41,9 @@ Store these files in [/Users/harshith/Dev/Projects/litey/models](/Users/harshith
 - `embedding_model.tflite`
 
 The macOS wake-word path now uses `openwakeword` with `ai-edge-litert` instead of ONNX to keep the setup smaller and more reliable.
+
+## Phase 2: Goals
+
+- [ ] Integrate with litey
+- [ ] phase out existing
+- [ ] deploy on Jetson Nano
