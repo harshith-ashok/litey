@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime
 import json
 
-app = FastAPI(title="Local Device Control Server")
+app = FastAPI(title="Smart Home Control API")
 
 STATE_FILE = Path(__file__).with_name("device_state.json")
 
@@ -15,79 +15,52 @@ class ControlRequest(BaseModel):
     action: Union[Literal["on", "off", "red", "green", "blue"], int]
 
 
-DEFAULT_DEVICES = {
-    "Main Light": {
-        "object": "Main Light",
-        "actions": [
-            "on",
-            "off"
-        ],
-        "alias": [
-            "bulb",
-            "tube light",
-            "main lights"
-        ],
-        "type": "digital",
-        "state": {
-            "state": "off"
-        }
-    },
-    "Ceiling Fan": {
-        "object": "Ceiling Fan",
-        "actions": [
-            "on",
-            "off",
-            {
-                "range": {
-                    "min": 0,
-                    "max": 100
-                }
-            }
-        ],
-        "alias": [
-            "fan",
-            "ceiling fan"
-        ],
-        "type": "analog",
-        "state": {
-            "power": "off",
+DEFAULT_STATE = {
+    "devices": {
+        "Main Light": {
+            "status": 0
+        },
+        "Ceiling Fan": {
+            "status": 0,
             "value": 0
+        },
+        "Accent Light": {
+            "status": 0,
+            "color": "red"
         }
     },
-    "Accent Light": {
-        "object": "Accent Light",
-        "actions": [
-            "on",
-            "off",
-            "red",
-            "green",
-            "blue"
-        ],
-        "alias": [
-            "accent light",
-            "small light"
-        ],
-        "type": "digital",
-        "state": {
-            "state": "off",
-            "color": None
-        }
-    }
+    "detected_objects": [],
+    "last_updated": None
+}
+
+
+ALIASES = {
+    "main light": "Main Light",
+    "bulb": "Main Light",
+    "tube light": "Main Light",
+    "main lights": "Main Light",
+    "ceiling fan": "Ceiling Fan",
+    "fan": "Ceiling Fan",
+    "accent light": "Accent Light",
+    "small light": "Accent Light"
 }
 
 
 def load_state():
     if STATE_FILE.exists():
         with open(STATE_FILE, "r") as f:
-            return json.load(f)
+            state = json.load(f)
 
-    state = {
-        "devices": DEFAULT_DEVICES,
-        "last_updated": None
-    }
+        if "detected_objects" not in state:
+            state["detected_objects"] = []
 
-    save_state(state)
-    return state
+        if "last_updated" not in state:
+            state["last_updated"] = None
+
+        return state
+
+    save_state(DEFAULT_STATE.copy())
+    return load_state()
 
 
 def save_state(state):
@@ -97,37 +70,73 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-def find_device(name: str):
-    state = load_state()
-    devices = state["devices"]
+def resolve_device(name: str):
+    key = name.strip().lower()
 
-    name = name.strip().lower()
+    if key in ALIASES:
+        return ALIASES[key]
 
-    for device in devices.values():
-        if device["object"].lower() == name:
+    for device in DEFAULT_STATE["devices"]:
+        if device.lower() == key:
             return device
-
-        for alias in device["alias"]:
-            if alias.lower() == name:
-                return device
 
     return None
 
 
+def normalize_detected_objects(objects):
+    normalized = []
+    seen = set()
+
+    for obj in objects:
+        if isinstance(obj, dict):
+            label = obj.get("label", "")
+        else:
+            label = str(obj)
+
+        label = label.strip().lower()
+
+        if not label:
+            continue
+
+        if label == "person":
+            continue
+
+        if label in seen:
+            continue
+
+        seen.add(label)
+        normalized.append(label)
+
+    return sorted(normalized)
+
+
+def update_detected_objects(objects):
+    state = load_state()
+    state["detected_objects"] = normalize_detected_objects(objects)
+    save_state(state)
+    return state["detected_objects"]
+
+
+@app.get("/")
+def root():
+    return {
+        "name": "Smart Home Control API",
+        "status": "running"
+    }
+
+
 @app.get("/devices")
 def list_devices():
-    state = load_state()
-    return {
-        "devices": list(state["devices"].values()),
-        "last_updated": state["last_updated"]
-    }
+    return load_state()
 
 
 @app.get("/devices/{device_name}")
 def get_device(device_name: str):
-    device = find_device(device_name)
+    state = load_state()
 
-    if not device:
+    resolved = resolve_device(device_name)
+
+    if not resolved:
         return {
             "success": False,
             "error": f"Unknown device: {device_name}"
@@ -135,98 +144,106 @@ def get_device(device_name: str):
 
     return {
         "success": True,
-        "device": device
+        "device": {
+            "name": resolved,
+            **state["devices"][resolved]
+        },
+        "detected_objects": state.get("detected_objects", []),
+        "last_updated": state.get("last_updated")
+    }
+
+
+@app.get("/objects")
+def get_detected_objects():
+    state = load_state()
+
+    return {
+        "success": True,
+        "detected_objects": state.get("detected_objects", []),
+        "count": len(state.get("detected_objects", [])),
+        "last_updated": state.get("last_updated")
+    }
+
+
+@app.post("/objects")
+def set_detected_objects(payload: dict):
+    objects = payload.get("objects", [])
+    detected_objects = update_detected_objects(objects)
+
+    state = load_state()
+
+    return {
+        "success": True,
+        "detected_objects": detected_objects,
+        "count": len(detected_objects),
+        "last_updated": state.get("last_updated")
     }
 
 
 @app.post("/")
 def control_device(request: ControlRequest):
     state = load_state()
-    device = find_device(request.object)
 
-    if not device:
+    device_name = resolve_device(request.object)
+
+    if not device_name:
         return {
             "success": False,
-            "error": f"Unknown device: {request.object}",
-            "available_devices": list(state["devices"].keys())
+            "error": f"Unknown device: {request.object}"
         }
 
     action = request.action
+    device = state["devices"][device_name]
 
-    if device["type"] == "analog":
+    if device_name == "Ceiling Fan":
         if isinstance(action, int):
-            if not 0 <= action <= 100:
-                return {
-                    "success": False,
-                    "error": "Analog values must be between 0 and 100"
-                }
-            value = action
-
+            value = max(0, min(100, action))
         elif action == "on":
             value = 100
-
         elif action == "off":
             value = 0
-
         else:
             return {
                 "success": False,
-                "error": f"Invalid action '{action}' for {device['object']}"
+                "error": "Invalid fan action"
             }
 
-        resolved_state = {
-            "power": "on" if value > 0 else "off",
-            "value": value
-        }
+        device["value"] = value
+        device["status"] = 1 if value > 0 else 0
 
-        device["state"] = resolved_state
-
-    else:
-        allowed_actions = [
-            item
-            for item in device["actions"]
-            if isinstance(item, str)
-        ]
-
-        if isinstance(action, int):
-            return {
-                "success": False,
-                "error": f"Numeric values are not allowed for {device['object']}"
-            }
-
-        if action not in allowed_actions:
-            return {
-                "success": False,
-                "error": f"Invalid action '{action}' for {device['object']}",
-                "allowed_actions": allowed_actions
-            }
-
-        resolved_state = {
-            "state": action
-        }
-
-        if device["object"] == "Accent Light":
-            if action in ["red", "green", "blue"]:
-                resolved_state["state"] = "on"
-                resolved_state["color"] = action
-            else:
-                resolved_state["color"] = None
+    elif device_name == "Main Light":
+        if action == "on":
+            device["status"] = 1
+        elif action == "off":
+            device["status"] = 0
         else:
-            resolved_state["color"] = None
+            return {
+                "success": False,
+                "error": "Main Light only supports on/off"
+            }
 
-        device["state"] = resolved_state
+    elif device_name == "Accent Light":
+        if action == "on":
+            device["status"] = 1
+        elif action == "off":
+            device["status"] = 0
+        elif action in ["red", "green", "blue"]:
+            device["status"] = 1
+            device["color"] = action
+        else:
+            return {
+                "success": False,
+                "error": "Invalid Accent Light action"
+            }
 
-    # Persist updated state to device_state.json
     save_state(state)
 
     return {
         "success": True,
-        "request": {
-            "object": request.object,
-            "action": request.action
-        },
-        "device": device,
-        "resolved_state": resolved_state,
+        "device": device_name,
+        "action": action,
+        "state": device,
+        "detected_objects": state.get("detected_objects", []),
         "last_updated": state["last_updated"]
     }
 

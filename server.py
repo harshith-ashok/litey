@@ -69,7 +69,6 @@ def detect_device_command(text):
     if not device_name:
         return None, None
 
-    # Check for numeric values (e.g. "set fan to 75")
     numbers = re.findall(r"\d+", text_lower)
     if numbers:
         action = int(numbers[0])
@@ -91,15 +90,6 @@ def normalize_device_name(name: str) -> str:
 
 
 def format_device_summary(device):
-    """
-    Expected device format from API:
-    {
-        "name": "Ceiling Fan",
-        "status": 1,
-        "value": 75,
-        "color": "red"
-    }
-    """
     name = device.get("name") or device.get("object")
     status = "ON" if device.get("status", 0) else "OFF"
 
@@ -116,16 +106,78 @@ def format_device_summary(device):
     return f"{name} is {status}"
 
 
+def is_object_detection_query(text: str) -> bool:
+    text = text.lower()
+
+    keywords = [
+        "what do you see",
+        "what can you see",
+        "what objects",
+        "detect objects",
+        "detect object",
+        "identify objects",
+        "identify object",
+        "scan objects",
+        "scan the room",
+        "what is in front of you",
+        "what's in front of you",
+        "what do you detect",
+        "visible objects",
+        "objects detected",
+    ]
+
+    return any(keyword in text for keyword in keywords)
+
+
 @mcp.tool()
 def chat(prompt: str) -> str:
-    """
-    Main conversational entry point.
-    Automatically detects device control requests and status queries.
-    """
-
     prompt_lower = prompt.lower()
 
-    # Detect status queries
+    if is_object_detection_query(prompt):
+        result = get_detected_objects()
+
+        try:
+            parsed = json.loads(result)
+
+            if parsed.get("success"):
+                objects = parsed.get("detected_objects", [])
+
+                if not objects:
+                    response_msg = "I do not see any objects right now."
+
+                elif len(objects) == 1:
+                    response_msg = f"I can see a {objects[0]}."
+
+                else:
+                    response_msg = "I can see " + ", ".join(objects[:-1])
+                    response_msg += f", and {objects[-1]}."
+            else:
+                response_msg = parsed.get(
+                    "error",
+                    "Unable to detect objects right now."
+                )
+        except Exception:
+            response_msg = result
+
+        session = load_session()
+        session["messages"].append(
+            {
+                "role": "user",
+                "content": prompt,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        session["messages"].append(
+            {
+                "role": "assistant",
+                "content": response_msg,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        save_session(session)
+
+        return response_msg
+
     status_keywords = [
         "status",
         "state",
@@ -137,7 +189,8 @@ def chat(prompt: str) -> str:
     ]
 
     is_status_query = any(
-        keyword in prompt_lower for keyword in status_keywords)
+        keyword in prompt_lower for keyword in status_keywords
+    )
 
     if is_status_query:
         device_name, _ = detect_device_command(prompt)
@@ -151,10 +204,14 @@ def chat(prompt: str) -> str:
             parsed = json.loads(status_result)
             if parsed.get("success"):
                 response_msg = parsed.get(
-                    "summary", "Status retrieved successfully.")
+                    "summary",
+                    "Status retrieved successfully."
+                )
             else:
                 response_msg = parsed.get(
-                    "error", "Unable to retrieve device status.")
+                    "error",
+                    "Unable to retrieve device status."
+                )
         except Exception:
             response_msg = status_result
 
@@ -177,7 +234,6 @@ def chat(prompt: str) -> str:
 
         return response_msg
 
-    # Detect device control commands
     device_name, action = detect_device_command(prompt)
 
     if device_name and action is not None:
@@ -191,7 +247,9 @@ def chat(prompt: str) -> str:
                 )
             else:
                 response_msg = parsed.get(
-                    "error", "Unable to control the device.")
+                    "error",
+                    "Unable to control the device."
+                )
         except Exception:
             response_msg = (
                 f"Done! I have set the {device_name.lower()} to {action}."
@@ -216,7 +274,6 @@ def chat(prompt: str) -> str:
 
         return response_msg
 
-    # Normal LLM conversation
     session = load_session()
 
     context = get_conversation_context(session)
@@ -262,18 +319,47 @@ def chat(prompt: str) -> str:
 
 
 @mcp.tool()
-def get_device_status(object: str = "") -> str:
-    """
-    Get current device status.
-
-    Examples:
-    - get_device_status()              -> all devices
-    - get_device_status("Ceiling Fan")
-    - get_device_status("fan")
-    """
-
+def get_detected_objects() -> str:
     try:
-        # Return all devices
+        response = requests.get(
+            f"{CONTROL_SERVER_URL}/objects",
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        return json.dumps({
+            "success": data.get("success", True),
+            "detected_objects": data.get("detected_objects", []),
+            "count": data.get("count", len(data.get("detected_objects", []))),
+            "last_updated": data.get("last_updated"),
+        }, indent=2)
+
+    except requests.exceptions.ConnectionError:
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Could not connect to control server at "
+                    f"{CONTROL_SERVER_URL}"
+                ),
+            },
+            indent=2,
+        )
+
+    except Exception as e:
+        return json.dumps(
+            {
+                "success": False,
+                "error": str(e),
+            },
+            indent=2,
+        )
+
+
+@mcp.tool()
+def get_device_status(object: str = "") -> str:
+    try:
         if not object or not object.strip():
             response = requests.get(
                 f"{CONTROL_SERVER_URL}/devices",
@@ -282,10 +368,6 @@ def get_device_status(object: str = "") -> str:
             response.raise_for_status()
 
             data = response.json()
-
-            # Supports either:
-            # {"devices": {...}}
-            # or {"devices": [...]}
             devices_data = data.get("devices", {})
             last_updated = data.get("last_updated")
 
@@ -314,7 +396,6 @@ def get_device_status(object: str = "") -> str:
                 indent=2,
             )
 
-        # Return one device
         resolved_name = normalize_device_name(object)
 
         response = requests.get(
@@ -325,9 +406,6 @@ def get_device_status(object: str = "") -> str:
 
         data = response.json()
 
-        # Supports:
-        # {"success": True, "device": {...}}
-        # or direct device object
         if isinstance(data, dict) and "device" in data:
             device = data["device"]
         else:
@@ -371,15 +449,6 @@ def get_device_status(object: str = "") -> str:
 
 @mcp.tool()
 def control_device(object: str, action) -> str:
-    """
-    Control a device.
-
-    Examples:
-    - control_device("Main Light", "on")
-    - control_device("Ceiling Fan", 75)
-    - control_device("Accent Light", "red")
-    """
-
     try:
         response = requests.post(
             CONTROL_SERVER_URL,
