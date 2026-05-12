@@ -16,25 +16,58 @@ import asyncio
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-RECORD_SECONDS = 5
+RECORD_SECONDS = 3
+
 WAKEWORD = "alexa"
 WAKEWORD_THRESHOLD = 0.5
+
 MODEL_DIR = Path(__file__).with_name("models")
+
+# TensorFlow/TFLite model files (works on macOS)
 WAKEWORD_MODEL = MODEL_DIR / f"{WAKEWORD}_v0.1.tflite"
 MELSPEC_MODEL = MODEL_DIR / "melspectrogram.tflite"
 EMBEDDING_MODEL = MODEL_DIR / "embedding_model.tflite"
 
 
 def create_wakeword_detector():
-    required_files = [WAKEWORD_MODEL, MELSPEC_MODEL, EMBEDDING_MODEL]
+    required_files = [
+        WAKEWORD_MODEL,
+        MELSPEC_MODEL,
+        EMBEDDING_MODEL,
+    ]
+
     missing_files = [path.name for path in required_files if not path.exists()]
 
     if missing_files:
         raise RuntimeError(
             "Missing wake word model files in "
-            f"{MODEL_DIR}: {', '.join(missing_files)}. "
-            "Add the openWakeWord .tflite models there before starting the assistant."
+            f"{MODEL_DIR}:\n"
+            f"  - " + "\n  - ".join(missing_files)
         )
+
+    # openWakeWord specifically tries to import `tflite_runtime.interpreter`
+    # when inference_framework="tflite". On macOS, `tflite-runtime` is not
+    # distributed on PyPI, but TensorFlow includes a compatible TFLite
+    # interpreter. We create a small compatibility shim so openWakeWord can
+    # use TensorFlow's interpreter transparently.
+    try:
+        import tflite_runtime.interpreter  # noqa: F401
+    except ImportError:
+        import types
+        import tensorflow.lite as tflite
+        import sys
+
+        # Create a fake package: tflite_runtime
+        tflite_runtime_module = types.ModuleType("tflite_runtime")
+        interpreter_module = types.ModuleType("tflite_runtime.interpreter")
+
+        # Expose TensorFlow's Interpreter class
+        interpreter_module.Interpreter = tflite.Interpreter
+
+        # Register both modules so `import tflite_runtime.interpreter` works
+        tflite_runtime_module.interpreter = interpreter_module
+        sys.modules["tflite_runtime"] = tflite_runtime_module
+        sys.modules["tflite_runtime.interpreter"] = interpreter_module
 
     return Model(
         wakeword_models=[str(WAKEWORD_MODEL)],
@@ -50,18 +83,23 @@ def get_wakeword_label(detector):
 
 def record_audio(seconds=RECORD_SECONDS):
     print("Recording...")
+
     audio = sd.rec(
         int(seconds * SAMPLE_RATE),
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
-        dtype="int16"
+        dtype="int16",
     )
     sd.wait()
 
-    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    temp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".wav",
+    )
+
     with wave.open(temp.name, "wb") as wf:
         wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)
+        wf.setsampwidth(2)  # 16-bit audio
         wf.setframerate(SAMPLE_RATE)
         wf.writeframes(audio.tobytes())
 
@@ -82,10 +120,15 @@ async def query_mcp(prompt):
     async with stdio_client(server) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            result = await session.call_tool("chat", {"prompt": prompt})
+
+            result = await session.call_tool(
+                "chat",
+                {"prompt": prompt},
+            )
 
             if hasattr(result, "content") and result.content:
                 part = result.content[0]
+
                 if hasattr(part, "text"):
                     return part.text
 
@@ -94,13 +137,17 @@ async def query_mcp(prompt):
 
 def listen_for_wakeword(detector, threshold=WAKEWORD_THRESHOLD):
     detector.reset()
+
     wakeword_label = get_wakeword_label(detector)
+
     print(f"Listening for wake word: {WAKEWORD}")
+
     q = queue.Queue()
 
     def callback(indata, frames, time_info, status):
         if status:
             print(status)
+
         q.put(indata.copy())
 
     with sd.InputStream(
@@ -112,10 +159,18 @@ def listen_for_wakeword(detector, threshold=WAKEWORD_THRESHOLD):
     ):
         while True:
             audio = q.get()
-            samples = np.asarray(audio, dtype=np.int16).reshape(-1)
+
+            samples = np.asarray(
+                audio,
+                dtype=np.int16,
+            ).reshape(-1)
 
             predictions = detector.predict(samples)
-            score = predictions.get(wakeword_label, 0.0)
+
+            score = predictions.get(
+                wakeword_label,
+                0.0,
+            )
 
             if score >= threshold:
                 print("Wake word detected!")
@@ -125,7 +180,13 @@ def listen_for_wakeword(detector, threshold=WAKEWORD_THRESHOLD):
 
 
 def main():
-    whisper = WhisperModel("base", compute_type="int8")
+    print("Loading Whisper model...")
+    whisper = WhisperModel(
+        "base",
+        compute_type="int8",
+    )
+
+    print("Loading wake word detector...")
     wakeword_detector = create_wakeword_detector()
 
     print("Voice assistant ready.")
@@ -135,8 +196,12 @@ def main():
         listen_for_wakeword(wakeword_detector)
 
         wav_file = record_audio()
+
         try:
-            text = transcribe(whisper, wav_file)
+            text = transcribe(
+                whisper,
+                wav_file,
+            )
         finally:
             Path(wav_file).unlink(missing_ok=True)
 
@@ -146,7 +211,10 @@ def main():
 
         print(f"You said: {text}")
 
-        response = asyncio.run(query_mcp(text))
+        response = asyncio.run(
+            query_mcp(text)
+        )
+
         print(f"Assistant: {response}")
 
 

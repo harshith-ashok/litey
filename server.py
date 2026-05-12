@@ -8,7 +8,7 @@ from datetime import datetime
 mcp = FastMCP("Local Voice Assistant")
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen2.5:3b"
+MODEL = "gemma3:1b"
 SESSION_FILE = Path(__file__).with_name("conversation_history.json")
 CONTROL_SERVER_URL = "http://localhost:8120"
 
