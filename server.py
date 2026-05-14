@@ -124,6 +124,13 @@ def is_object_detection_query(text: str) -> bool:
         "what do you detect",
         "visible objects",
         "objects detected",
+        "on my table",
+        "on the table",
+        "on my desk",
+        "on the desk",
+        "what's on",
+        "what is on",
+        "what are the objects",
     ]
 
     return any(keyword in text for keyword in keywords)
