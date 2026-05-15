@@ -22,6 +22,7 @@ WAKEWORD = "alexa"
 WAKEWORD_THRESHOLD = 0.5
 
 MODEL_DIR = Path(__file__).with_name("models")
+STATE_FILE = Path("/Users/harshith/.status.json")
 
 # TensorFlow/TFLite model files (works on macOS)
 WAKEWORD_MODEL = MODEL_DIR / f"{WAKEWORD}_v0.1.tflite"
@@ -81,16 +82,32 @@ def get_wakeword_label(detector):
     return next(iter(detector.models))
 
 
+def set_listening_state(is_listening: bool):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(
+        (
+            "{\n"
+            f'  "is_listening": {"true" if is_listening else "false"},\n'
+            f'  "updated_at": {time.time():.6f}\n'
+            "}\n"
+        )
+    )
+
+
 def record_audio(seconds=RECORD_SECONDS):
     print("Recording...")
+    set_listening_state(True)
 
-    audio = sd.rec(
-        int(seconds * SAMPLE_RATE),
-        samplerate=SAMPLE_RATE,
-        channels=CHANNELS,
-        dtype="int16",
-    )
-    sd.wait()
+    try:
+        audio = sd.rec(
+            int(seconds * SAMPLE_RATE),
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="int16",
+        )
+        sd.wait()
+    finally:
+        set_listening_state(False)
 
     temp = tempfile.NamedTemporaryFile(
         delete=False,
@@ -180,6 +197,7 @@ def listen_for_wakeword(detector, threshold=WAKEWORD_THRESHOLD):
 
 
 def main():
+    set_listening_state(False)
     print("Loading Whisper model...")
     whisper = WhisperModel(
         "base",
@@ -192,30 +210,33 @@ def main():
     print("Voice assistant ready.")
     print(f"Say '{WAKEWORD}' to start, or Ctrl+C to exit.")
 
-    while True:
-        listen_for_wakeword(wakeword_detector)
+    try:
+        while True:
+            listen_for_wakeword(wakeword_detector)
 
-        wav_file = record_audio()
+            wav_file = record_audio()
 
-        try:
-            text = transcribe(
-                whisper,
-                wav_file,
+            try:
+                text = transcribe(
+                    whisper,
+                    wav_file,
+                )
+            finally:
+                Path(wav_file).unlink(missing_ok=True)
+
+            if not text:
+                print("Could not understand speech.")
+                continue
+
+            print(f"You said: {text}")
+
+            response = asyncio.run(
+                query_mcp(text)
             )
-        finally:
-            Path(wav_file).unlink(missing_ok=True)
 
-        if not text:
-            print("Could not understand speech.")
-            continue
-
-        print(f"You said: {text}")
-
-        response = asyncio.run(
-            query_mcp(text)
-        )
-
-        print(f"Assistant: {response}")
+            print(f"Assistant: {response}")
+    finally:
+        set_listening_state(False)
 
 
 if __name__ == "__main__":
